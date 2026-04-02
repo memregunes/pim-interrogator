@@ -1,83 +1,72 @@
-from fastapi import FastAPI, HTTPException
+import sys
+import asyncio
 from playwright.async_api import async_playwright
 
-app = FastAPI(title="PIM Interrogator API")
-
-@app.get("/scan")
-async def scan_website(url: str):
+async def scan_website(url):
     if not url.startswith("http"):
         url = "https://" + url
 
-    evidence_set = set()
+    evidence = set()
     score = 0.0
 
     async with async_playwright() as p:
+        # Launching with a user-agent to avoid being blocked by enterprise firewalls
         browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
+        context = await browser.new_context(user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+        page = await context.new_page()
 
-        # Listen to all background network traffic
+        # Listen for background "Data Plumbings"
         async def handle_response(response):
             req_url = response.url.lower()
-            
-            # 1. Inriver Footprints
-            if "productmarketingcloud.com" in req_url or "inriver" in req_url:
-                evidence_set.add("Inriver CDN/API footprint detected in network.")
-            
-            # 2. Akeneo Footprints
-            elif "akeneo" in req_url:
-                evidence_set.add("Akeneo CDN/API footprint detected in network.")
-                    
-            # 3. Salsify Footprints
-            elif "salsify.com" in req_url or "salsify" in req_url:
-                evidence_set.add("Salsify CDN/API footprint detected in network.")
-                    
-            # 4. Enterprise Search (Usually fed by PIM)
-            elif "algolia.net" in req_url and "products" in req_url:
-                evidence_set.add("Algolia enterprise product search detected.")
+            # Detection for Akeneo, Salsify, Inriver, and Enterprise CDNs
+            if any(term in req_url for term in ["akeneo", "salsify", "inriver", "productmarketingcloud", "pimcore"]):
+                evidence.add(f"Enterprise PIM Network Trace: {req_url.split('/')[2]}")
 
         page.on("response", handle_response)
 
         try:
-            # Navigate to the site and wait for the dust to settle
-            await page.goto(url, wait_until="networkidle", timeout=15000)
-            
+            # Extended timeout for heavy manufacturer sites like BEGA
+            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            await page.wait_for_timeout(5000) # Wait for background lazy-loading
+
             html = await page.content()
             html_lower = html.lower()
 
-            # Front-end Lighting Industry Footprints
+            # Lighting Industry Specific Footprints
             if ".ies" in html_lower or ".ldt" in html_lower:
-                evidence_set.add("Found photometric file downloads (.ies/.ldt).")
-            
-            if "bim" in html_lower or "revit" in html_lower:
-                evidence_set.add("Found BIM/Revit references.")
-
-            if "download data sheet" in html_lower or "spec sheet" in html_lower:
-                evidence_set.add("Found dynamic data/spec sheet generation.")
+                evidence.add("Photometric Data Management (.ies/.ldt)")
+            if any(term in html_lower for term in ["revit", "bim object", "archicad"]):
+                evidence.add("BIM/Architectural Asset hosting")
+            if "spec sheet" in html_lower or "datasheet" in html_lower:
+                evidence.add("Dynamic Spec Sheet Generator")
+            if "configurator" in html_lower or "product-selector" in html_lower:
+                evidence.add("Complex Product Configurator (Logic-driven)")
 
         except Exception as e:
+            return {"url": url, "error": str(e)}
+        finally:
             await browser.close()
-            raise HTTPException(status_code=500, detail=str(e))
 
-        await browser.close()
-
-    # Calculate final score safely based on unique evidence found
-    for item in evidence_set:
-        if "Inriver" in item or "Akeneo" in item or "Salsify" in item:
-            score += 0.7  # Major PIM detection is an almost guaranteed high score
-        elif "Algolia" in item:
-            score += 0.2
-        elif "photometric" in item:
-            score += 0.3
-        elif "BIM" in item:
-            score += 0.2
-        elif "spec sheet" in item:
-            score += 0.2
+    # Scoring Logic
+    for item in evidence:
+        if "Enterprise PIM" in item: score += 0.7
+        elif "Photometric" in item: score += 0.3
+        elif "BIM" in item: score += 0.2
+        elif "Spec Sheet" in item: score += 0.2
+        elif "Configurator" in item: score += 0.3
 
     final_score = min(round(score, 2), 1.0)
-    
     return {
-        "target_url": url,
+        "url": url,
         "pim_score": final_score,
-        "evidence": list(evidence_set),
-        "conclusion": "High Probability" if final_score >= 0.6 else "Low Probability"
+        "evidence": list(evidence),
+        "status": "High Probability" if final_score >= 0.6 else "Medium/Low"
     }
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        target = sys.argv[1]
+        result = asyncio.run(scan_website(target))
+        print(result)
+    else:
+        print("Please provide a URL: python main.py https://example.com")
