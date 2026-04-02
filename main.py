@@ -1,48 +1,53 @@
 import sys
 import asyncio
+import re
 from playwright.async_api import async_playwright
 
 async def scan_website(url):
     if not url.startswith("http"):
         url = "https://" + url
 
+    # We preserve the original categories but expand the 'evidence'
     evidence = set()
     score = 0.0
 
     async with async_playwright() as p:
+        # Step 1: Improved Browser Setup (Bypass enterprise firewalls)
         browser = await p.chromium.launch(headless=True)
-        # Use a real User-Agent to avoid being blocked by BEGA/iGuzzini firewalls
-        context = await browser.new_context(user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        )
         page = await context.new_page()
 
-        # STRENGTH 1: Network Interception (The "Plumbing")
+        # STRENGTH 1: Network Sniffing (From the newer Interrogator logic)
         async def handle_response(response):
             req_url = response.url.lower()
+            # Detects Salsify, Akeneo, Inriver, etc.
             pim_sigs = ["akeneo", "salsify", "inriver", "productmarketingcloud", "pimcore", "perfion"]
             for sig in pim_sigs:
                 if sig in req_url:
-                    evidence.add(f"Detected Enterprise PIM Engine: {sig}")
+                    evidence.add(f"Enterprise PIM Engine Trace: {sig}")
 
         page.on("response", handle_response)
 
         try:
-            # Wait for DOM to be ready, then a 5s grace period for background scripts
+            # Step 2: Realistic Loading (Crucial for BEGA/iGuzzini)
             await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            await page.wait_for_timeout(5000)
+            await page.wait_for_timeout(5000) # Wait for background 'logic' to trigger
 
             html = await page.content()
             html_lower = html.lower()
 
-            # STRENGTH 2: Keyword & Asset Scanning (The "Surface")
-            # Photometrics
+            # STRENGTH 2: Keyword & Asset Scanning (Your Original 'Scout' logic)
+            # Photometrics (.ies/.ldt) - The Lighting Industry 'Gold Standard'
             if ".ies" in html_lower or ".ldt" in html_lower:
-                evidence.add("Photometric Asset Mapping (.ies/.ldt)")
+                evidence.add("Technical Asset Mapping (Photometric .ies/.ldt)")
 
-            # BIM/Revit
+            # BIM/Revit - Specifier readiness
             if any(x in html_lower for x in ["revit", "bim", "archicad", "rfa file"]):
-                evidence.add("BIM/Architectural Assets")
+                evidence.add("BIM/Architectural Data Hosting")
 
-            # Documentation Logic
+            # Documentation Logic - Sign of a Single Source of Truth
             if any(x in html_lower for x in ["spec sheet", "datasheet", "configurator", "submittal"]):
                 evidence.add("Dynamic Documentation/Configurator Logic")
 
@@ -51,14 +56,17 @@ async def scan_website(url):
         finally:
             await browser.close()
 
-    # Hybrid Scoring Logic
+    # THE HYBRID SCORING ENGINE (Combines both strengths)
     for item in evidence:
-        if "PIM Engine" in item: score += 0.6  # Heavy weight for network hits
-        if "Photometric" in item: score += 0.2
-        if "BIM" in item: score += 0.1
-        if "Documentation" in item: score += 0.1
+        if "Enterprise PIM" in item: score += 0.6   # Hard evidence (Signature)
+        if "Photometric" in item: score += 0.2     # Soft evidence (Capability)
+        if "BIM" in item: score += 0.1             # Soft evidence (Capability)
+        if "Documentation" in item: score += 0.2   # Soft evidence (Capability)
 
+    # FINAL AUDIT: If a site has Photometrics + BIM + Configurator,
+    # it gets a High Score even if we don't know the PIM's brand name.
     final_score = min(round(score, 2), 1.0)
+
     return {
         "url": url,
         "pim_score": final_score,
